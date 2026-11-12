@@ -11,28 +11,84 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 
 # Streamlit Page Config
-st.set_page_config(page_title="Zyro HR Help Desk RAG", page_icon="🤖", layout="centered")
+st.set_page_config(
+    page_title="Zyro Dynamics | Enterprise HR Help Desk", 
+    layout="centered"
+)
 
-st.title("🤖 Zyro Dynamics HR Help Desk")
-st.markdown("Ask any question regarding internal company HR policies.")
+# Custom CSS Styling for Professional Polish
+st.markdown("""
+    <style>
+    .main-header {
+        font-size: 2.2rem;
+        color: #1E3A8A;
+        font-weight: 700;
+        margin-bottom: 0px;
+    }
+    .sub-header {
+        font-size: 1.1rem;
+        color: #4B5563;
+        margin-bottom: 20px;
+    }
+    .stButton>button {
+        width: 100%;
+        border-radius: 8px;
+        border: 1px solid #D1D5DB;
+        background-color: #F9FAFB;
+        color: #1F2937;
+        font-weight: 500;
+        transition: all 0.3s ease;
+    }
+    .stButton>button:hover {
+        background-color: #EFF6FF;
+        border-color: #3B82F6;
+        color: #1D4ED8;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-# Sidebar for API Key configuration
+# App Header
+st.markdown('<p class="main-header">Zyro Dynamics HR Help Desk</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-header">Internal Policy Assistant powered by advanced RAG & LLMs</p>', unsafe_allow_html=True)
+
+# Sidebar for Configuration & Quick FAQs
 with st.sidebar:
     st.header("Configuration")
     groq_api_key = st.text_input("Enter Groq API Key", type="password")
+    
+    st.markdown("---")
+    st.subheader("Model Settings")
+    model_choice = st.selectbox(
+        "Select LLM Model", 
+        ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "allam-2-7b"]
+    )
+    temperature = st.slider("Temperature", min_value=0.0, max_value=0.5, value=0.0, step=0.1)
+
+    st.markdown("---")
+    st.subheader("Quick HR FAQs")
+    faq_selected = None
+    if st.button("Maternity Leave Policy"):
+        faq_selected = "What is our policy on maternity leave?"
+    if st.button("Medical Insurance Coverage"):
+        faq_selected = "What is the policy regarding health insurance coverage?"
+    if st.button("Performance Review & PIP"):
+        faq_selected = "When is the Annual Performance Review conducted and what triggers a PIP?"
+    if st.button("Sick Leave & Medical Certificates"):
+        faq_selected = "When is a medical certificate required for sick leave?"
+
     st.markdown("---")
     st.markdown("### About")
-    st.markdown("This chatbot uses RAG with LangChain, FAISS, HuggingFace embeddings, and Groq LLM to answer HR policy queries strictly based on company documents.")
+    st.markdown("Designed for Zyro Dynamics employees to query verified HR manuals with strict source grounding and automated refusals.")
 
 if not groq_api_key:
-    st.warning("Please enter your Groq API Key in the sidebar to start chatting.")
+    st.warning("Please enter your Groq API Key in the sidebar to initialize the HR help desk.")
     st.stop()
 
 os.environ["GROQ_API_KEY"] = groq_api_key
 
-# Cache resource to load and embed PDFs only once
+# Cache resource to load and embed PDFs efficiently
 @st.cache_resource
-def initialize_rag():
+def initialize_rag(model_name, temp):
     pdf_paths = glob.glob("*.pdf") + glob.glob("policies/*.pdf")
     if not pdf_paths:
         pdf_paths = glob.glob("**/*.pdf", recursive=True)
@@ -52,7 +108,7 @@ def initialize_rag():
         search_kwargs={"k": 5, "fetch_k": 10, "lambda_mult": 0.7}
     )
     
-    llm = ChatGroq(model_name="openai/gpt-oss-120b", temperature=0)
+    llm = ChatGroq(model_name=model_name, temperature=temp)
     
     template = """You are an expert HR Help Desk assistant for Zyro Dynamics Pvt. Ltd. 
 Your task is to answer employee HR queries accurately and concisely using ONLY the provided context from internal company policy documents.
@@ -72,37 +128,69 @@ Answer:"""
 
     prompt = ChatPromptTemplate.from_template(template)
     
-    def format_docs(docs):
-        return "\n\n".join(doc.page_content for doc in docs)
+    return retriever, prompt, llm
 
-    rag_chain = (
-        {"context": retriever | format_docs, "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
-    return rag_chain
+with st.spinner("Loading company policy corpus and building vector index..."):
+    retriever, prompt_template, llm = initialize_rag(model_choice, temperature)
 
-with st.spinner("Loading HR policy documents and building vector store... Please wait."):
-    chain = initialize_rag()
-
-st.success("HR Policy Knowledge Base Loaded Successfully!")
+st.success("HR Knowledge Base Loaded Successfully!")
 
 # Initialize chat history
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Display chat messages from history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+        if "sources" in message and message["sources"]:
+            with st.expander("View Source Policy Citations"):
+                for idx, src in enumerate(message["sources"], 1):
+                    source_name = os.path.basename(src.metadata.get('source', 'Unknown Policy'))
+                    page_num = src.metadata.get('page', 0) + 1
+                    st.markdown(f"**Source {idx}:** `{source_name}` (Page {page_num})")
+                    st.caption(src.page_content[:300] + "...")
 
-if prompt := st.chat_input("Ask an HR policy question..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
+# Determine user input (either from chat input box or sidebar FAQ buttons)
+user_query = st.chat_input("Ask an HR policy question (e.g., probation period, leave rules)...")
+if faq_selected:
+    user_query = faq_selected
+
+if user_query:
+    # Append user message
+    st.session_state.messages.append({"role": "user", "content": user_query})
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(user_query)
 
+    # Generate assistant response with retrieved context & citations
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            response = chain.invoke(prompt)
+        with st.spinner("Analyzing HR guidelines..."):
+            # Retrieve relevant document chunks
+            retrieved_docs = retriever.invoke(user_query)
+            context_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
+            
+            # Format chain execution
+            chain = (
+                {"context": lambda x: context_text, "question": RunnablePassthrough()}
+                | prompt_template
+                | llm
+                | StrOutputParser()
+            )
+            response = chain.invoke(user_query)
             st.markdown(response)
-    st.session_state.messages.append({"role": "assistant", "content": response})
+            
+            # Display source expander
+            if retrieved_docs:
+                with st.expander("View Source Policy Citations"):
+                    for idx, src in enumerate(retrieved_docs, 1):
+                        source_name = os.path.basename(src.metadata.get('source', 'Unknown Policy'))
+                        page_num = src.metadata.get('page', 0) + 1
+                        st.markdown(f"**Source {idx}:** `{source_name}` (Page {page_num})")
+                        st.caption(src.page_content[:300] + "...")
+
+    # Save to history
+    st.session_state.messages.append({
+        "role": "assistant", 
+        "content": response, 
+        "sources": retrieved_docs
+    })
